@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Квоты — BossInRelay{% endblock %}
+{% block content %}
+<h1>Квоты</h1>
+<p class="sub">Дневные и месячные лимиты запросов по каждой модели «провайдер:модель».</p>
+<div class="panel">
+  <table>
+    <tr><th>Модель</th><th>День</th><th>Месяц</th><th></th></tr>
+    {% for key, q in quotas.items() %}
+    <tr>
+      <td class="mono">{{ key }}</td>
+      <td>
+        <div class="bar"><i style="width:{{ (q.used_day / q.limit_day * 100) | round(1) if q.limit_day else 0 }}%"></i></div>
+        {{ q.used_day }} / {{ q.limit_day }}
+      </td>
+      <td>{{ q.used_month }} / {{ q.limit_month }}</td>
+      <td><button class="ghost small" onclick='editQuota({{ key | tojson }}, {{ q.limit_day }}, {{ q.limit_month }})'>Изменить</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="panel">
+  <h2>Установить квоту</h2>
+  <form id="f-quota" onsubmit="return saveQuota(event)">
+    <label>Модель («провайдер:модель»)
+      <span class="hint">Например openai:gpt-4o-mini. Должна совпадать с участником пула.</span>
+      <input type="text" name="key" required>
+    </label>
+    <label>Лимит в день
+      <span class="hint">Сколько запросов разрешено в сутки; при превышении модель пропускается.</span>
+      <input type="number" name="limit_day" min="1" required>
+    </label>
+    <label>Лимит в месяц
+      <span class="hint">Месячный потолок запросов.</span>
+      <input type="number" name="limit_month" min="1" required>
+    </label>
+    <button type="submit">Сохранить</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function editQuota(key, day, month) {
+  const f = document.getElementById("f-quota");
+  f.key.value = key; f.limit_day.value = day; f.limit_month.value = month;
+  f.scrollIntoView({ behavior: "smooth" });
+}
+async function saveQuota(e) {
+  e.preventDefault();
+  await apiForm("/admin/quotas", e.target);
+  location.reload(); return false;
+}
+</script>
+{% endblock %}

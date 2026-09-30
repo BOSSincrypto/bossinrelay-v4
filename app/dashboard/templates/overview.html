@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Обзор — BossInRelay{% endblock %}
+{% block content %}
+<h1>Обзор</h1>
+<p class="sub">Состояние релея на 30.09.2026 · данные из /admin/stats</p>
+<div class="seg" id="period-seg">
+  <button class="ghost small" data-p="5m">5 мин</button>
+  <button class="ghost small on" data-p="day">День</button>
+  <button class="ghost small" data-p="month">Месяц</button>
+</div>
+<span class="hint" style="margin-bottom:12px">Период переключает масштаб графиков ниже.</span>
+<div class="cards" id="cards">
+  <div class="card blue"><div class="v" id="c-today">…</div><div class="l">Запросов сегодня</div></div>
+  <div class="card"><div class="v" id="c-total">…</div><div class="l">Всего запросов</div></div>
+  <div class="card"><div class="v" id="c-hit">…</div><div class="l">Cache hit rate</div></div>
+  <div class="card"><div class="v" id="c-spent">…</div><div class="l">Потрачено сегодня, $</div></div>
+  <div class="card"><div class="v" id="c-lat">…</div><div class="l">Средняя задержка, мс</div></div>
+</div>
+<div class="grid2">
+  <div class="panel">
+    <h2>Запросы и ошибки</h2>
+    <div class="chart-box"><canvas id="ch-req"></canvas>
+      <div class="chart-fallback" id="fb-req"><p class="sub">График недоступен (нет CDN). Данные:</p><table id="fb-req-t"></table></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Задержка, мс</h2>
+    <div class="chart-box"><canvas id="ch-lat"></canvas>
+      <div class="chart-fallback" id="fb-lat"><p class="sub">График недоступен (нет CDN).</p></div>
+    </div>
+  </div>
+</div>
+<div class="panel">
+  <h2>Квоты по моделям</h2>
+  <span class="hint">Доля израсходованного дневного лимита. Полный список — в разделе «Квоты».</span>
+  <div class="chart-box" style="height:200px"><canvas id="ch-quota"></canvas>
+    <div class="chart-fallback" id="fb-quota"><p class="sub">График недоступен (нет CDN).</p></div>
+  </div>
+</div>
+<div class="panel">
+  <h2>По пулам</h2>
+  <table id="t-pools">
+    <tr><th>Пул</th><th>Запросы</th><th>Траты, $</th></tr>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  const grid = { color: "rgba(255,255,255,.1)" };
+  const s = await api("/admin/stats");
+  const quotas = await api("/admin/quotas").catch(() => ({}));
+  document.getElementById("c-today").textContent = s.requests_today.toLocaleString("ru-RU");
+  document.getElementById("c-total").textContent = s.requests_total.toLocaleString("ru-RU");
+  document.getElementById("c-hit").textContent = Math.round(s.cache_hit_rate * 100) + "%";
+  document.getElementById("c-spent").textContent = "$" + s.spent_today_usd.toFixed(2);
+  document.getElementById("c-lat").textContent = s.avg_latency_ms;
+  const t = document.getElementById("t-pools");
+  for (const r of s.by_pool) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.pool}</td><td>${r.requests.toLocaleString("ru-RU")}</td><td>$${r.usd.toFixed(2)}</td>`;
+    t.appendChild(tr);
+  }
+  // Период: пока seed один; переключатель меняет подписи и масштабирует бары.
+  const scales = { "5m": 0.02, "day": 1, "month": 30 };
+  let period = "day";
+  let charts = [];
+  function drawCharts() {
+    charts.forEach(c => c.destroy()); charts = [];
+    if (!window.Chart) {  // фолбэк без CDN: таблица вместо графика
+      document.getElementById("ch-req").style.display = "none";
+      document.getElementById("ch-lat").style.display = "none";
+      document.getElementById("ch-quota").style.display = "none";
+      ["fb-req", "fb-lat", "fb-quota"].forEach(id => document.getElementById(id).style.display = "block");
+      const ft = document.getElementById("fb-req-t");
+      ft.innerHTML = "<tr><th>Час</th><th>Запросы</th></tr>" +
+        s.chart.labels.map((l, i) => `<tr><td>${l}</td><td>${Math.round(s.chart.requests[i] * scales[period])}</td></tr>`).join("");
+      return;
+    }
+    Chart.defaults.color = "rgba(255,255,255,.64)";
+    Chart.defaults.borderColor = "rgba(255,255,255,.08)";
+    const k = scales[period];
+    const req = s.chart.requests.map(v => Math.round(v * k));
+    const err = req.map(v => Math.round(v * 0.02));  // seed: ~2% ошибок
+    charts.push(new Chart(document.getElementById("ch-req"), {
+      type: "bar",
+      data: { labels: s.chart.labels, datasets: [
+        { label: "Запросы", data: req, backgroundColor: "#40A7E3", borderRadius: 3 },
+        { label: "Ошибки", data: err, backgroundColor: "#E5484D", borderRadius: 3 },
+      ] },
+      options: { plugins: { legend: { position: "bottom" } }, scales: { x: { grid }, y: { grid } }, maintainAspectRatio: false },
+    }));
+    charts.push(new Chart(document.getElementById("ch-lat"), {
+      type: "line",
+      data: { labels: s.chart.labels, datasets: [{ label: "мс", data: s.chart.latency_ms, borderColor: "#FAB219", tension: .35, fill: true, backgroundColor: "rgba(250,178,25,.08)", pointRadius: 2 }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: { grid }, y: { grid } }, maintainAspectRatio: false },
+    }));
+    const qkeys = Object.keys(quotas);
+    const qpct = qkeys.map(key => quotas[key].limit_day ? Math.round(quotas[key].used_day / quotas[key].limit_day * 100) : 0);
+    charts.push(new Chart(document.getElementById("ch-quota"), {
+      type: "bar",
+      data: { labels: qkeys, datasets: [{ label: "% дневной квоты", data: qpct, backgroundColor: "#0CA30C", borderRadius: 3 }] },
+      options: { indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { grid, max: 100 }, y: { grid } }, maintainAspectRatio: false },
+    }));
+  }
+  document.getElementById("period-seg").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    period = b.dataset.p;
+    document.querySelectorAll("#period-seg button").forEach(x => x.classList.toggle("on", x === b));
+    drawCharts();
+  });
+  drawCharts();
+})();
+</script>
+{% endblock %}

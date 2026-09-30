@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Кэш — BossInRelay{% endblock %}
+{% block content %}
+<h1>Кэш</h1>
+<p class="sub">Семантический кэш: похожие запросы отвечают без обращения к провайдеру.</p>
+<div class="cards">
+  <div class="card blue"><div class="v">{{ (cache.hit_rate * 100) | round(1) }}%</div><div class="l">Hit rate</div></div>
+  <div class="card"><div class="v">{{ cache.entries }}</div><div class="l">Записей</div></div>
+</div>
+<div class="panel">
+  <h2>Параметры</h2>
+  <form onsubmit="return saveCache(event)">
+    <label>TTL, секунды
+      <span class="hint">Сколько хранить запись. 3600 = час, 86400 = сутки.</span>
+      <input type="number" name="ttl_seconds" value="{{ cache.ttl_seconds }}" min="60">
+    </label>
+    <label>Порог схожести (0–1)
+      <span class="hint">Насколько похожим должен быть запрос, чтобы сработал кэш. 0.92 — строже, 0.8 — мягче.</span>
+      <input type="number" name="similarity_threshold" value="{{ cache.similarity_threshold }}" step="0.01" min="0" max="1">
+    </label>
+    <label>Максимум записей
+      <span class="hint">Лимит размера кэша; старые записи вытесняются.</span>
+      <input type="number" name="max_entries" value="{{ cache.max_entries }}" min="100">
+    </label>
+    <button type="submit">Сохранить</button>
+    <button type="button" class="danger" onclick="if(confirm('Очистить весь кэш?')) post('/admin/cache/clear').then(()=>location.reload())">Очистить кэш</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function saveCache(e) {
+  e.preventDefault();
+  const f = e.target;
+  await api("/admin/cache", { method: "POST", body: JSON.stringify({
+    ttl_seconds: +f.ttl_seconds.value,
+    similarity_threshold: +f.similarity_threshold.value,
+    max_entries: +f.max_entries.value }) });
+  toast("Сохранено"); location.reload(); return false;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Провайдеры и ключи — BossInRelay{% endblock %}
+{% block content %}
+<h1>Провайдеры и ключи</h1>
+<p class="sub">Провайдер — внешний LLM-API. У каждого свои модели и API-ключи.</p>
+
+<div class="panel">
+  <h2>Проверка моделей (truemodel-lite)</h2>
+  <span class="hint">Дешёвая identity-проверка: сверка response.model с заявленным id и потолка output. Тяжёлая проверка — только кнопкой «Глубокая проверка», не автоматически.</span>
+  <table style="margin-top:10px">
+    <tr><th>Модель</th><th>Семейство</th><th>Контекст</th><th>Вердикт</th><th></th></tr>
+    {% for key, m in registry.items() %}
+    <tr>
+      <td class="mono">{{ key }}</td>
+      <td>{{ m.vendor }} · {{ m.family }} · cutoff {{ m.cutoff }}</td>
+      <td>{{ m.context }} / {{ m.output_ceiling }}</td>
+      <td>
+        {% if m.verdict == "matches" %}<span class="badge ok">совпала</span>
+        {% elif m.verdict == "likely" %}<span class="badge blue">похожа</span>
+        {% elif m.verdict == "wrong-tier" %}<span class="badge warn">не тот тир</span>
+        {% else %}<span class="badge bad">подмена</span>{% endif %}
+        <span class="hint">{{ m.note }}</span>
+      </td>
+      <td><button class="ghost small" onclick="deepCheck('{{ key }}')">Глубокая проверка</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Добавить / обновить провайдера</h2>
+  <form id="f-prov" onsubmit="return saveProv(event)">
+    <label>ID (латиницей, без пробелов)
+      <span class="hint">Например: openai, anthropic. По нему пулы ссылаются на модели вида «id:модель».</span>
+      <input type="text" name="id" required>
+    </label>
+    <label>Название
+      <input type="text" name="name" placeholder="OpenAI">
+    </label>
+    <label>Base URL
+      <span class="hint">Корень API провайдера, например https://api.openai.com/v1. Только публичные http/https-адреса: localhost, приватные сети и метадата облаков отклоняются.</span>
+      <input type="text" name="base_url">
+    </label>
+    <label>Модели (через запятую)
+      <span class="hint">Точные имена моделей у провайдера, например: gpt-4o, gpt-4o-mini.</span>
+      <input type="text" name="models">
+    </label>
+    <button type="submit">Сохранить</button>
+  </form>
+</div>
+
+{% for p in providers %}
+<div class="panel">
+  <h2>{{ p.name }} <span class="mono">({{ p.id }})</span>
+    <span class="badge {{ 'ok' if p.enabled else '' }}">{{ "вкл" if p.enabled else "выкл" }}</span>
+  </h2>
+  <p class="sub mono">{{ p.base_url }} · модели: {{ p.models | join(", ") }}</p>
+  <div class="row">
+    <button class="ghost small" onclick="post('/admin/providers/{{ p.id }}/toggle').then(()=>location.reload())">Вкл/выкл</button>
+    <button class="danger small" onclick="if(confirm('Удалить провайдера?')) api('/admin/providers/{{ p.id }}',{method:'DELETE'}).then(()=>location.reload())">Удалить</button>
+  </div>
+  <table>
+    <tr><th>Ключ</th><th>Заметка</th><th>Проверка</th><th></th></tr>
+    {% for k in p["keys"] %}
+    <tr>
+      <td class="mono">{{ k.masked }} <span class="badge {{ 'ok' if k.enabled else '' }}">{{ "активен" if k.enabled else "выкл" }}</span></td>
+      <td>{{ k.note }}</td>
+      <td>{% if k.last_check %}<span class="badge {{ 'ok' if k.last_check.alive else 'bad' }}">{{ "жив" if k.last_check.alive else "мёртв" }} · {{ k.last_check.latency_ms }} мс</span>{% if k.last_check.verdict %} {% if k.last_check.verdict == "matches" %}<span class="badge ok">совпала</span>{% elif k.last_check.verdict == "likely" %}<span class="badge blue">похожа</span>{% elif k.last_check.verdict == "wrong-tier" %}<span class="badge warn">не тот тир</span>{% else %}<span class="badge bad">подмена</span>{% endif %}{% endif %}{% if k.last_check.served_id %}<span class="hint mono">{{ k.last_check.served_id }}</span>{% endif %}{% else %}<span class="badge">не проверен</span>{% endif %}</td>
+      <td class="row">
+        <button class="ghost small" onclick="post('/admin/keys/{{ k.id }}/check').then(()=>location.reload())">Проверить</button>
+        <button class="ghost small" onclick="post('/admin/keys/{{ k.id }}/toggle').then(()=>location.reload())">Вкл/выкл</button>
+        <button class="danger small" onclick="if(confirm('Удалить ключ?')) api('/admin/keys/{{ k.id }}',{method:'DELETE'}).then(()=>location.reload())">Удалить</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form onsubmit="return addKey(event, '{{ p.id }}')" class="row" style="margin-top:10px">
+    <input type="password" name="raw" placeholder="Новый ключ" required style="max-width:280px">
+    <input type="text" name="note" placeholder="Заметка" style="max-width:180px">
+    <button type="submit" class="small">Добавить ключ</button>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function saveProv(e) {
+  e.preventDefault();
+  const f = e.target;
+  const models = f.models.value.split(",").map(s => s.trim()).filter(Boolean);
+  await api("/admin/providers", { method: "POST",
+    body: JSON.stringify({ id: f.id.value.trim(), name: f.name.value.trim(), base_url: f.base_url.value.trim(), models }) });
+  toast("Сохранено"); location.reload(); return false;
+}
+async function addKey(e, pid) {
+  e.preventDefault();
+  await apiForm("/admin/providers/" + pid + "/keys", e.target);
+  location.reload(); return false;
+}
+async function deepCheck(key) {
+  const [prov, ...rest] = key.split(":");
+  await post("/admin/models/" + prov + "/" + rest.join(":") + "/deep-check");
+}
+</script>
+{% endblock %}

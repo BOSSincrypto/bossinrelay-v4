@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Пулы и модели — BossInRelay{% endblock %}
+{% block content %}
+<h1>Пулы и виртуальные модели</h1>
+<p class="sub">Пул — виртуальная модель: один ID для клиентов, внутри — набор «провайдер:модель» и стратегия выбора.</p>
+
+<div class="panel">
+  <h2>Создать / обновить пул</h2>
+  <form id="f-pool" onsubmit="return savePool(event)">
+    <label>ID пула
+      <span class="hint">Имя виртуальной модели, которое видят клиенты, например chat-main.</span>
+      <input type="text" name="id" required>
+    </label>
+    <label>Стратегия
+      <span class="hint">manual — только первая доступная; cascade — по порядку пока не ответит; random — случайная; cheapest — самая дешёвая живая.</span>
+      <select name="strategy">
+        <option value="manual">manual — вручную первая</option>
+        <option value="cascade">cascade — каскад по порядку</option>
+        <option value="random">random — случайно</option>
+        <option value="cheapest">cheapest — самая дешёвая</option>
+      </select>
+    </label>
+    <label>Участники (по одному «провайдер:модель» на строку)
+      <span class="hint">Доступные: {{ prov_models | join(", ") }}. Порядок важен для cascade.</span>
+      <textarea name="members" rows="3"></textarea>
+    </label>
+    <label>Unlock on
+      <span class="hint">Условие разблокировки пула (тариф, флаг, группа). Пусто — доступен всем.</span>
+      <input type="text" name="unlock_on" placeholder="например: премиум-тариф">
+    </label>
+    <label>System prompt пула
+      <span class="hint">Подставляется перед каждым запросом в этот пул. Задаёт тон и язык ответов.</span>
+      <textarea name="system_prompt" placeholder="Отвечай кратко и по-русски."></textarea>
+    </label>
+    <button type="submit">Сохранить</button>
+  </form>
+</div>
+
+{% for p in pools %}
+<div class="panel">
+  <h2>{{ p.id }} <span class="badge blue">{{ p.strategy }}</span>
+    <span class="badge {{ 'ok' if p.enabled else '' }}">{{ "вкл" if p.enabled else "выкл" }}</span></h2>
+  <p>Участники: <span class="mono">{{ p.members | join(" → ") }}</span></p>
+  <p class="sub">Unlock: {{ p.unlock_on or "—" }} · System: {{ p.system_prompt or "—" }}</p>
+  <div class="row">
+    <button class="ghost small" onclick="editPool('{{ p.id }}')">Редактировать</button>
+    <button class="ghost small" onclick="post('/admin/pools/{{ p.id }}/toggle').then(()=>location.reload())">Вкл/выкл</button>
+    <button class="danger small" onclick="if(confirm('Удалить пул?')) api('/admin/pools/{{ p.id }}',{method:'DELETE'}).then(()=>location.reload())">Удалить</button>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}
+{% block scripts %}
+<script>
+const POOLS = {{ pools | tojson }};
+function editPool(id) {
+  const p = POOLS.find(x => x.id === id); if (!p) return;
+  const f = document.getElementById("f-pool");
+  f.id.value = p.id; f.strategy.value = p.strategy;
+  f.members.value = (p.members || []).join("\n");
+  f.unlock_on.value = p.unlock_on || ""; f.system_prompt.value = p.system_prompt || "";
+  f.scrollIntoView({ behavior: "smooth" });
+}
+async function savePool(e) {
+  e.preventDefault();
+  const f = e.target;
+  const members = f.members.value.split("\n").map(s => s.trim()).filter(Boolean);
+  await api("/admin/pools", { method: "POST", body: JSON.stringify({
+    id: f.id.value.trim(), strategy: f.strategy.value, members,
+    unlock_on: f.unlock_on.value.trim(), system_prompt: f.system_prompt.value }) });
+  toast("Сохранено"); location.reload(); return false;
+}
+</script>
+{% endblock %}

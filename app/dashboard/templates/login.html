@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Вход — BossInRelay{% endblock %}
+{% block content %}
+<div class="login-wrap panel">
+  <h1>Вход в админку</h1>
+  <p class="sub">Введите admin-токен (совпадает с ADMIN_TOKEN на сервере).</p>
+  <form id="loginForm">
+    <label>Токен
+      <input type="password" name="token" required autocomplete="current-password">
+    </label>
+    <button type="submit">Войти</button>
+  </form>
+</div>
+<script>
+document.getElementById("loginForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const v = e.target.token.value.trim();
+  document.cookie = "admin_token=" + encodeURIComponent(v) + "; path=/; max-age=86400; SameSite=Lax";
+  location.href = "/";
+});
+</script>
+{% endblock %}
