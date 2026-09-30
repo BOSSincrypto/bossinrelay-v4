@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Настройки — BossInRelay{% endblock %}
+{% block content %}
+<h1>Настройки</h1>
+<p class="sub">Глобальные параметры релея. Применяются ко всем пулам.</p>
+<div class="panel">
+  <form id="f-settings" onsubmit="return saveSettings(event)">
+    <label>Пул по умолчанию
+      <span class="hint">Куда идут запросы без явного указания модели.</span>
+      <select name="default_pool">
+        {% for p in pools %}
+        <option value="{{ p.id }}" {% if settings.default_pool == p.id %}selected{% endif %}>{{ p.id }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Таймаут запроса, сек
+      <span class="hint">Сколько ждать ответа провайдера, прежде чем попробовать следующего (60 — обычно хватает).</span>
+      <input type="number" name="request_timeout_s" value="{{ settings.request_timeout_s }}" min="5" max="600">
+    </label>
+    <label>Повторы
+      <span class="hint">Сколько раз перепробовать при ошибке, прежде чем вернуть ошибку клиенту.</span>
+      <input type="number" name="max_retries" value="{{ settings.max_retries }}" min="0" max="10">
+    </label>
+    <label>Уровень логов
+      <span class="hint">debug — подробно для отладки; info — обычная работа; warning/error — только проблемы.</span>
+      <select name="log_level">
+        {% for lv in ["debug", "info", "warning", "error"] %}
+        <option value="{{ lv }}" {% if settings.log_level == lv %}selected{% endif %}>{{ lv }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label><input type="checkbox" name="enable_cache" {% if settings.enable_cache %}checked{% endif %} style="width:auto">
+      Кэширование включено
+      <span class="hint">Отвечать из кэша на похожие запросы без обращения к провайдеру (экономит деньги).</span>
+    </label>
+    <label><input type="checkbox" name="expose_metrics" {% if settings.expose_metrics %}checked{% endif %} style="width:auto">
+      Отдавать метрики
+      <span class="hint">Эндпоинт /metrics для Prometheus: запросы, задержки, траты.</span>
+    </label>
+    <label>Лимит запросов в минуту (без ключа)
+      <span class="hint">Общий входной лимит по IP до парсинга тела. Превышение — 429 с Retry-After.</span>
+      <input type="number" name="rate_limit_per_min" value="{{ settings.rate_limit_per_min }}" min="10" max="10000">
+    </label>
+    <label>Лимит запросов в минуту (на ключ)
+      <span class="hint">Per-key лимит по Authorization. Превышение — 429 с Retry-After.</span>
+      <input type="number" name="rate_limit_per_key_min" value="{{ settings.rate_limit_per_key_min }}" min="10" max="10000">
+    </label>
+    <button type="submit">Сохранить</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function saveSettings(e) {
+  e.preventDefault();
+  const f = e.target;
+  await api("/admin/settings", { method: "POST", body: JSON.stringify({
+    default_pool: f.default_pool.value,
+    request_timeout_s: +f.request_timeout_s.value,
+    max_retries: +f.max_retries.value,
+    log_level: f.log_level.value,
+    enable_cache: f.enable_cache.checked,
+    expose_metrics: f.expose_metrics.checked,
+    rate_limit_per_min: +f.rate_limit_per_min.value,
+    rate_limit_per_key_min: +f.rate_limit_per_key_min.value }) });
+  toast("Сохранено"); return false;
+}
+</script>
+{% endblock %}

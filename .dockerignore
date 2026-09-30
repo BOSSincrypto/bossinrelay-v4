@@ -1,0 +1,21 @@
+# Держит образ < 400MB: в контекст не попадает ничего лишнего.
+.git/
+.gitignore
+.claude/
+.serena/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+*.db
+*.db-*
+*.db-journal
+deploy/
+README.md
+receipts/
+review-receipts/
+.DS_Store
+Thumbs.db

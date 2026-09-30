@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Сессии — BossInRelay{% endblock %}
+{% block content %}
+<h1>Сессии</h1>
+<p class="sub">История диалогов через релей. Нажмите на сессию, чтобы раскрыть переписку.</p>
+<div class="panel">
+  <table>
+    <tr><th>ID</th><th>Начало</th><th>Пул</th><th>Токены</th><th>Траты, $</th></tr>
+    {% for s in sessions %}
+    <tr>
+      <td><a href="#" onclick="return openSession('{{ s.id }}')">{{ s.id }}</a></td>
+      <td>{{ s.started_at }}</td><td>{{ s.pool }}</td>
+      <td>{{ s.tokens }}</td><td>${{ "%.4f" | format(s.cost_usd) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="panel" id="detail" style="display:none">
+  <h2 id="d-title">Сессия</h2>
+  <div id="d-msgs"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function openSession(id) {
+  const s = await api("/admin/sessions/" + id);
+  document.getElementById("detail").style.display = "block";
+  document.getElementById("d-title").textContent =
+    `Сессия ${s.id} · ${s.pool} · ${s.tokens} токенов · $${s.cost_usd.toFixed(4)}`;
+  const box = document.getElementById("d-msgs"); box.innerHTML = "";
+  for (const m of s.messages) {
+    const d = document.createElement("div");
+    d.className = "msg " + m.role;
+    d.textContent = (m.role === "user" ? "Пользователь: " : "Ассистент: ") + m.text;
+    box.appendChild(d);
+  }
+  document.getElementById("detail").scrollIntoView({ behavior: "smooth" });
+  return false;
+}
+</script>
+{% endblock %}

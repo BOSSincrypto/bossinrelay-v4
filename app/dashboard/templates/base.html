@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}BossInRelay{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">Boss<span>InRelay</span></div>
+    <nav class="nav">
+      {% for id, label, url in nav %}
+      <a href="{{ url }}" class="{% if active == id %}on{% endif %}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <span><span class="dot"></span>Релей работает · <span id="clock">--:--:--</span> UTC</span>
+      <span>BossInRelay</span>
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+<script>
+(function () {
+  var el = document.getElementById("clock");
+  function tick() {
+    var d = new Date();
+    el.textContent = String(d.getUTCHours()).padStart(2, "0") + ":" +
+      String(d.getUTCMinutes()).padStart(2, "0") + ":" +
+      String(d.getUTCSeconds()).padStart(2, "0");
+  }
+  tick(); setInterval(tick, 1000);
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
