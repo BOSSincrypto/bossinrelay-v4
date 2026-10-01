@@ -10,15 +10,21 @@
 from __future__ import annotations
 
 # потолки/output — ориентировочные, для эвристики wrong-tier, не для биллинга.
+# cohort_median_tokens — медиана completion_tokens когорты семейства при
+# дословном повторе эталонного текста deep-check (~200 токенов); допуск 5%.
 FAMILIES: dict[str, dict] = {
     "gpt-4o": {"vendor": "openai", "family": "gpt-4o", "context": 128_000,
-               "output_ceiling": 16_384, "cutoff": "2023-10"},
+               "output_ceiling": 16_384, "cutoff": "2023-10",
+               "cohort_median_tokens": 205},
     "gpt-4o-mini": {"vendor": "openai", "family": "gpt-4o", "context": 128_000,
-                    "output_ceiling": 16_384, "cutoff": "2023-10"},
+                    "output_ceiling": 16_384, "cutoff": "2023-10",
+                    "cohort_median_tokens": 205},
     "claude-sonnet-4-6": {"vendor": "anthropic", "family": "claude-sonnet", "context": 200_000,
-                          "output_ceiling": 8192, "cutoff": "2025-01"},
+                          "output_ceiling": 8192, "cutoff": "2025-01",
+                          "cohort_median_tokens": 212},
     "claude-haiku-4-5": {"vendor": "anthropic", "family": "claude-haiku", "context": 200_000,
-                         "output_ceiling": 8192, "cutoff": "2025-01"},
+                         "output_ceiling": 8192, "cutoff": "2025-01",
+                         "cohort_median_tokens": 212},
 }
 
 _CHEAP_MARKERS = ("mini", "haiku", "flash", "nano", "lite")

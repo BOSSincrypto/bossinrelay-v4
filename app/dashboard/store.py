@@ -10,6 +10,8 @@ from __future__ import annotations
 import itertools
 import time
 
+from ..db import client as db_client
+
 _ids = itertools.count(100)
 
 
@@ -175,3 +177,106 @@ VERDICT_LABELS = {
     "wrong-tier": "не тот тир",
     "mismatch": "подмена",
 }
+
+
+# ---------- персист конфига в libsql ----------
+# STORE остаётся источником правды в памяти; БД — переживает рестарт.
+# Сырые ключи НЕ сохраняем: в provider_keys лежит только masked.
+
+_CACHE_SETTING_KEYS = {
+    "ttl_seconds": "cache.ttl_seconds",
+    "similarity_threshold": "cache.similarity_threshold",
+    "max_entries": "cache.max_entries",
+}
+
+_loaded = False
+
+
+def load_from_db() -> bool:
+    """Залить конфиг из БД в STORE. True — в БД были данные,
+    False — БД пуста (нужен bootstrap из seed)."""
+    cfg = db_client.load_config()
+    if not cfg["providers"] and not cfg["pools"]:
+        return False
+    STORE["providers"][:] = cfg["providers"]
+    STORE["pools"][:] = cfg["pools"]
+    for key in [k for k in STORE["quotas"] if k not in cfg["quotas"]]:
+        del STORE["quotas"][key]
+    for key, lim in cfg["quotas"].items():
+        q = STORE["quotas"].setdefault(key, {"used_day": 0, "used_month": 0})
+        q["limit_day"] = lim["limit_day"]
+        q["limit_month"] = lim["limit_month"]
+    rev_cache = {v: k for k, v in _CACHE_SETTING_KEYS.items()}
+    for k, v in cfg["settings"].items():
+        if k in rev_cache:
+            STORE["cache"][rev_cache[k]] = v
+        else:
+            STORE["settings"][k] = v
+    for mk, vd in cfg["verdicts"].items():
+        if mk in MODEL_REGISTRY:
+            if vd["verdict"]:
+                MODEL_REGISTRY[mk]["verdict"] = vd["verdict"]
+            if vd["note"]:
+                MODEL_REGISTRY[mk]["note"] = vd["note"]
+    return True
+
+
+def persist() -> None:
+    """Сохранить весь STORE в БД (идемпотентно). Best-effort: при
+    недоступности БД молча пропускаем — STORE остаётся источником правды."""
+    try:
+        cfg = db_client.load_config()
+        for p in STORE["providers"]:
+            db_client.save_provider(
+                p["id"], p.get("name", ""), p.get("base_url", ""),
+                p.get("enabled", True), p.get("models", []))
+            for k in p.get("keys", []):
+                db_client.save_key(
+                    k["id"], p["id"], k.get("masked", ""), k.get("note", ""),
+                    k.get("enabled", True), k.get("last_check"))
+        keep_keys = {k["id"] for p in STORE["providers"]
+                     for k in p.get("keys", [])}
+        for rp in cfg["providers"]:
+            if rp["id"] not in {p["id"] for p in STORE["providers"]}:
+                db_client.delete_provider_cfg(rp["id"])
+            else:
+                for k in rp.get("keys", []):
+                    if k["id"] not in keep_keys:
+                        db_client.delete_key_cfg(k["id"])
+        for pool in STORE["pools"]:
+            db_client.save_pool(
+                pool["id"], pool.get("strategy", "cascade"),
+                pool.get("members", []), pool.get("unlock_on", ""),
+                pool.get("system_prompt", ""), pool.get("enabled", True))
+        for rp in cfg["pools"]:
+            if rp["id"] not in {p["id"] for p in STORE["pools"]}:
+                db_client.delete_pool_cfg(rp["id"])
+        for key, q in STORE["quotas"].items():
+            db_client.save_quota(key, q["limit_day"], q["limit_month"])
+        for key in [k for k in cfg["quotas"] if k not in STORE["quotas"]]:
+            db_client.delete_quota_cfg(key)
+        for k, v in STORE["settings"].items():
+            db_client.save_setting(k, v)
+        for ck, sk in _CACHE_SETTING_KEYS.items():
+            db_client.save_setting(sk, STORE["cache"][ck])
+        for mk, e in MODEL_REGISTRY.items():
+            db_client.save_verdict(mk, verdict=e.get("verdict", ""),
+                                   note=e.get("note", ""))
+    except Exception:
+        pass
+
+
+def ensure_loaded() -> None:
+    """При старте: забрать конфиг из БД; при пустой БД — seed STORE в БД."""
+    global _loaded
+    if _loaded:
+        return
+    _loaded = True
+    try:
+        if not load_from_db():
+            persist()  # bootstrap
+    except Exception:
+        pass
+
+
+ensure_loaded()

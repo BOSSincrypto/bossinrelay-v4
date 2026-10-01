@@ -9,7 +9,9 @@
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
+import json
 import os
 import threading
 import time
@@ -43,6 +45,34 @@ def get_client():
             os.makedirs(os.path.dirname(path), exist_ok=True)
             _client = create_client_sync(f"file:{path}")
     return _client
+
+
+def close_client() -> None:
+    """Закрыть глобальный клиент (освободить поток libsql sync-executor).
+
+    Без этого CLI-процессы (self-test, скрипты) висят: поток executor'а
+    non-daemon. В uvicorn не критично, но вызываем и там через atexit.
+    Порядок важен: сначала flush на живом клиенте, потом отцепляем и закрываем —
+    иначе flush пересоздаст клиент и поток останется."""
+    global _client
+    with _lock:
+        c = _client
+    if c is None:
+        return
+    try:
+        flush_log()  # _client ещё на месте — новый клиент не создастся
+    except Exception:
+        pass
+    with _lock:
+        if _client is c:
+            _client = None
+    try:
+        c.close()
+    except Exception:
+        pass
+
+
+atexit.register(close_client)
 
 
 def init_db() -> bool:
@@ -197,6 +227,169 @@ def create_user(user_id: str, api_key_hash: str,
             "INSERT OR IGNORE INTO users (id, api_key_hash, quota_day, quota_month, created_at)"
             " VALUES (?,?,?,?,?)",
             [user_id, api_key_hash, quota_day, quota_month, int(time.time())])
+
+
+# ---------- config (персист конфига релея; сырые ключи НЕ храним) ----------
+
+def load_config() -> dict:
+    """Весь конфиг из БД: providers, pools, quotas, settings, verdicts.
+    Пустые таблицы -> пустые коллекции (caller решает: seed/bootstrap)."""
+    c = _ensure()
+    with _lock:
+        provs = c.execute(
+            "SELECT id, name, base_url, enabled FROM providers").rows
+        keys = c.execute(
+            "SELECT id, provider_id, masked, note, enabled, last_check_json"
+            " FROM provider_keys").rows
+        pmodels = c.execute(
+            "SELECT provider_id, name FROM provider_models").rows
+        pools = c.execute(
+            "SELECT id, strategy, members_json, unlock_on, system_prompt, enabled"
+            " FROM pools").rows
+        quotas = c.execute("SELECT key, limit_day, limit_month FROM quotas").rows
+        settings = c.execute("SELECT k, v FROM settings").rows
+        verdicts = c.execute(
+            "SELECT model_key, verdict, served_id, ceiling, error_class, note,"
+            " checked_at FROM model_verdicts").rows
+    models_by_prov: dict[str, list[str]] = {}
+    for r in pmodels:
+        models_by_prov.setdefault(r["provider_id"], []).append(r["name"])
+    keys_by_prov: dict[str, list[dict]] = {}
+    for r in keys:
+        try:
+            last_check = json.loads(r["last_check_json"] or "{}") or None
+        except Exception:
+            last_check = None
+        keys_by_prov.setdefault(r["provider_id"], []).append({
+            "id": r["id"], "masked": r["masked"], "note": r["note"],
+            "enabled": bool(r["enabled"]), "last_check": last_check})
+    return {
+        "providers": [{
+            "id": r["id"], "name": r["name"], "base_url": r["base_url"],
+            "models": models_by_prov.get(r["id"], []),
+            "enabled": bool(r["enabled"]),
+            "keys": keys_by_prov.get(r["id"], [])} for r in provs],
+        "pools": [{
+            "id": r["id"], "strategy": r["strategy"],
+            "members": json.loads(r["members_json"] or "[]"),
+            "unlock_on": r["unlock_on"], "system_prompt": r["system_prompt"],
+            "enabled": bool(r["enabled"])} for r in pools],
+        "quotas": {r["key"]: {"limit_day": r["limit_day"],
+                              "limit_month": r["limit_month"]} for r in quotas},
+        "settings": {r["k"]: json.loads(r["v"]) for r in settings},
+        "verdicts": {r["model_key"]: {
+            "verdict": r["verdict"], "served_id": r["served_id"],
+            "ceiling": r["ceiling"], "error_class": r["error_class"],
+            "note": r["note"], "checked_at": r["checked_at"]} for r in verdicts},
+    }
+
+
+def save_provider(pid: str, name: str = "", base_url: str = "",
+                  enabled: bool = True, models: list | None = None) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO providers (id, name, base_url, enabled) VALUES (?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
+            " base_url=excluded.base_url, enabled=excluded.enabled",
+            [pid, name, base_url, 1 if enabled else 0])
+        if models is not None:
+            c.execute("DELETE FROM provider_models WHERE provider_id=?", [pid])
+            for m in models:
+                c.execute(
+                    "INSERT OR IGNORE INTO provider_models (provider_id, name)"
+                    " VALUES (?,?)", [pid, m])
+
+
+def delete_provider_cfg(pid: str) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute("DELETE FROM provider_keys WHERE provider_id=?", [pid])
+        c.execute("DELETE FROM provider_models WHERE provider_id=?", [pid])
+        c.execute("DELETE FROM providers WHERE id=?", [pid])
+
+
+def save_key(kid: str, provider_id: str, masked: str, note: str = "",
+             enabled: bool = True, last_check: dict | None = None) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO provider_keys (id, provider_id, masked, note, enabled,"
+            " last_check_json) VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,"
+            " masked=excluded.masked, note=excluded.note,"
+            " enabled=excluded.enabled,"
+            " last_check_json=excluded.last_check_json",
+            [kid, provider_id, masked, note, 1 if enabled else 0,
+             json.dumps(last_check or {})])
+
+
+def delete_key_cfg(kid: str) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute("DELETE FROM provider_keys WHERE id=?", [kid])
+
+
+def save_pool(pid: str, strategy: str = "cascade", members: list | None = None,
+              unlock_on: str = "", system_prompt: str = "",
+              enabled: bool = True) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO pools (id, strategy, members_json, unlock_on,"
+            " system_prompt, enabled) VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET strategy=excluded.strategy,"
+            " members_json=excluded.members_json, unlock_on=excluded.unlock_on,"
+            " system_prompt=excluded.system_prompt, enabled=excluded.enabled",
+            [pid, strategy, json.dumps(members or []), unlock_on,
+             system_prompt, 1 if enabled else 0])
+
+
+def delete_pool_cfg(pid: str) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute("DELETE FROM pools WHERE id=?", [pid])
+
+
+def save_quota(key: str, limit_day: int, limit_month: int) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO quotas (key, limit_day, limit_month) VALUES (?,?,?)"
+            " ON CONFLICT(key) DO UPDATE SET limit_day=excluded.limit_day,"
+            " limit_month=excluded.limit_month",
+            [key, int(limit_day), int(limit_month)])
+
+
+def delete_quota_cfg(key: str) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute("DELETE FROM quotas WHERE key=?", [key])
+
+
+def save_setting(k: str, v) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO settings (k, v) VALUES (?,?)"
+            " ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            [k, json.dumps(v)])
+
+
+def save_verdict(model_key: str, verdict: str = "", served_id: str = "",
+                 ceiling: int = 0, error_class: str = "", note: str = "",
+                 checked_at: int = 0) -> None:
+    c = _ensure()
+    with _lock:
+        c.execute(
+            "INSERT INTO model_verdicts (model_key, verdict, served_id, ceiling,"
+            " error_class, note, checked_at) VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(model_key) DO UPDATE SET verdict=excluded.verdict,"
+            " served_id=excluded.served_id, ceiling=excluded.ceiling,"
+            " error_class=excluded.error_class, note=excluded.note,"
+            " checked_at=excluded.checked_at",
+            [model_key, verdict, served_id, int(ceiling or 0), error_class,
+             note, int(checked_at or 0)])
 
 
 # ---------- stats (заготовка для /admin/stats) ----------

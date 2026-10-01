@@ -1,12 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .dashboard.admin_api import router as admin_router
 from .dashboard.ratelimit import RateLimitMiddleware
 from .dashboard.views import router as views_router
+from .db import client as db_client
 from .routers.v1 import router as v1_router
 
-app = FastAPI(title="BossInRelay — админка")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Освободить поток libsql sync-executor ДО teardown интерпретатора,
+    # иначе threading._shutdown вечно ждёт non-daemon поток (см. client.close_client).
+    db_client.close_client()
+
+
+app = FastAPI(title="BossInRelay — админка", lifespan=lifespan)
 app.add_middleware(RateLimitMiddleware)
 app.mount("/static", StaticFiles(directory="app/dashboard/static"), name="static")
 app.include_router(admin_router)
