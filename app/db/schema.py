@@ -54,6 +54,47 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+-- Персист конфига релея (переживает рестарт). Сырые ключи НЕ хранятся:
+-- в provider_keys лежит только masked, сами ключи читаются из env.
+CREATE TABLE IF NOT EXISTS provider_keys (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    masked TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_check_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS provider_models (
+    provider_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (provider_id, name)
+);
+CREATE TABLE IF NOT EXISTS pools (
+    id TEXT PRIMARY KEY,
+    strategy TEXT NOT NULL DEFAULT 'cascade',
+    members_json TEXT NOT NULL DEFAULT '[]',
+    unlock_on TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS quotas (
+    key TEXT PRIMARY KEY,
+    limit_day INTEGER NOT NULL DEFAULT 0,
+    limit_month INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS settings (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS model_verdicts (
+    model_key TEXT PRIMARY KEY,
+    verdict TEXT NOT NULL DEFAULT '',
+    served_id TEXT NOT NULL DEFAULT '',
+    ceiling INTEGER NOT NULL DEFAULT 0,
+    error_class TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    checked_at INTEGER NOT NULL DEFAULT 0
+);
 """
 
 INDEXES = """

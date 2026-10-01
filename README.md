@@ -124,11 +124,31 @@ pool, response, embedding BLOB NULL, created_at, expires_at),
 `requests_log` (ts, user_id, pool, provider, model, prompt_tokens,
 completion_tokens, cost_usd, latency_ms, cache_hit).
 
+Персист конфига релея: `provider_keys` (id, provider_id, masked, note,
+enabled, last_check_json), `provider_models` (provider_id, name),
+`pools` (id, strategy, members_json, unlock_on, system_prompt, enabled),
+`quotas` (key, limit_day, limit_month), `settings` (k, v),
+`model_verdicts` (model_key, verdict, served_id, ceiling, error_class,
+note, checked_at). При старте STORE заливается из БД
+(`store.ensure_loaded()`), при пустой БД seed пишется в неё (bootstrap).
+Каждая мутация конфига через `/admin/*` вызывает `store.persist()`.
+Сырые API-ключи не хранятся никогда — только masked, сами ключи в env.
+
 Индексы: `cache_entries(prompt_hash, pool)`, `cache_entries(expires_at)`
 для TTL-чистки, `requests_log(ts)`, `requests_log(user_id, ts)`.
 Чистка протухшего кэша — периодическим `DELETE WHERE expires_at < now`.
 Записи статистики в лог батчатся (накопление ~50–100 строк, один INSERT),
 чтобы не дёргать диск на каждый запрос.
+
+Глубокая проверка модели (`app/core/deepcheck.py`): 7 сигналов с взвешенным
+голосованием hard=3/soft=2/context=1 — сверка `response.model`, утечка id
+в текстах ошибок, потолок output, токенайзер-фингерпринт (допуск 5%),
+энтропия однотокенной выборки (N=20), self-report cutoff + «НЕ ЗНАЮ»-проба,
+пазлы (арифметика, подсчёт букв, формат). Запуск — только кнопкой из дашборда
+(`POST /admin/models/{provider}/{model}/deep-check`), в фоне через
+`BackgroundTasks`, бюджет ~120с, вердикт + уверенность падают в реестр
+и персистятся. Self-test без живых ключей:
+`python -m app.core.deepcheck --self-test` (мок транспорта, оба вердикта).
 
 Remote-vs-embedded: дефолт — embedded файл `relay.db`, работает без сети
 и без Turso. Sync в Turso Cloud включается двумя переменными окружения

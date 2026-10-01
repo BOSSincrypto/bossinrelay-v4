@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException
 from pydantic import BaseModel
 
+from ..core import deepcheck as core_deepcheck
 from ..core import engine as core_engine
 from ..db import client as db_client
 from .auth import require_admin
 from .ssrf import validate_base_url
 from .store import (MODEL_REGISTRY, STORE, VERDICT_LABELS, find_key, find_pool,
-                    find_provider, mask_key, nid, now)
+                    find_provider, mask_key, nid, now, persist)
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
@@ -98,6 +99,7 @@ def upsert_provider(body: ProviderIn):
             "id": body.id, "name": body.name or body.id,
             "base_url": body.base_url, "models": models,
             "enabled": True, "keys": []})
+    persist()
     return ok()
 
 
@@ -107,6 +109,7 @@ def toggle_provider(pid: str):
     if not p:
         raise HTTPException(404, "провайдер не найден")
     p["enabled"] = not p["enabled"]
+    persist()
     return ok(enabled=p["enabled"])
 
 
@@ -116,6 +119,7 @@ def delete_provider(pid: str):
     STORE["providers"][:] = [p for p in STORE["providers"] if p["id"] != pid]
     if len(STORE["providers"]) == before:
         raise HTTPException(404, "провайдер не найден")
+    persist()
     return ok()
 
 
@@ -129,6 +133,7 @@ def add_key(pid: str, raw: str = Form(...), note: str = Form(default="")):
     key = {"id": nid("key"), "masked": mask_key(raw), "note": note,
            "enabled": True, "last_check": None}
     p["keys"].append(key)
+    persist()
     return ok(key=key)
 
 
@@ -145,6 +150,7 @@ def check_key(kid: str):
                            "claimed_id": None, "ceiling": None,
                            "error_class": "server", "verdict": "mismatch",
                            "note": str(e)[:200]}
+    persist()
     return ok(check=k["last_check"])  # type: ignore[union-attr]
 
 
@@ -154,6 +160,7 @@ def toggle_key(kid: str):
     if not k:
         raise HTTPException(404, "ключ не найден")
     k["enabled"] = not k["enabled"]
+    persist()
     return ok(enabled=k["enabled"])
 
 
@@ -163,6 +170,7 @@ def delete_key(kid: str):
     if not p:
         raise HTTPException(404, "ключ не найден")
     p["keys"][:] = [k for k in p["keys"] if k["id"] != kid]
+    persist()
     return ok()
 
 
@@ -192,6 +200,7 @@ def upsert_pool(body: PoolIn):
         p.update(data)
     else:
         STORE["pools"].append(data)
+    persist()
     return ok()
 
 
@@ -201,6 +210,7 @@ def toggle_pool(pid: str):
     if not p:
         raise HTTPException(404, "пул не найден")
     p["enabled"] = not p["enabled"]
+    persist()
     return ok(enabled=p["enabled"])
 
 
@@ -210,6 +220,7 @@ def delete_pool(pid: str):
     STORE["pools"][:] = [p for p in STORE["pools"] if p["id"] != pid]
     if len(STORE["pools"]) == before:
         raise HTTPException(404, "пул не найден")
+    persist()
     return ok()
 
 
@@ -231,6 +242,7 @@ def update_cache(body: CacheIn):
     STORE["cache"]["ttl_seconds"] = body.ttl_seconds
     STORE["cache"]["similarity_threshold"] = body.similarity_threshold
     STORE["cache"]["max_entries"] = body.max_entries
+    persist()
     return ok(cache=STORE["cache"])
 
 
@@ -271,6 +283,7 @@ def set_quota(key: str = Form(...), limit_day: int = Form(...),
     q = STORE["quotas"].setdefault(key, {"used_day": 0, "used_month": 0})
     q["limit_day"] = limit_day
     q["limit_month"] = limit_month
+    persist()
     return ok()
 
 
@@ -284,17 +297,52 @@ def model_registry():
 
 
 @router.post("/models/{provider}/{model}/deep-check")
-def deep_check(provider: str, model: str):
-    """Ручная «глубокая проверка» (тяжёлая: токенайзер-фингерпринт, JS-расстояние,
-    пазлы). Не запускается автоматически — только кнопкой из дашборда.
-    Заглушка: ядро вернёт настоящий отчёт; здесь — пометка «запущено»."""
+def deep_check(provider: str, model: str, background_tasks: BackgroundTasks):
+    """Ручная «глубокая проверка» (тяжёлая: токенайзер-фингерпринт,
+    энтропия выборки, cutoff-пробы, пазлы). Не запускается автоматически —
+    только кнопкой из дашборда. Отчёт — в entry["deep_check"], статус —
+    GET /models/registry (там же). Длится до ~120с, выполняется в фоне."""
     key = f"{provider}:{model}"
     entry = MODEL_REGISTRY.get(key)
     if not entry:
         raise HTTPException(404, "модель не в реестре")
-    entry["deep_check"] = {"status": "queued", "at": now()}
-    return ok(status="queued",
-              note="Глубокая проверка поставлена в очередь (выполняет ядро).")
+    if key in _DEEP_INFLIGHT:
+        return ok(status="running",
+                  note="Глубокая проверка уже выполняется — дождитесь отчёта.")
+    prev = entry.get("deep_check") or {}
+    if prev.get("status") == "running":
+        return ok(status="running",
+                  note="Глубокая проверка уже выполняется — дождитесь отчёта.")
+    entry["deep_check"] = {"status": "running", "at": now()}
+    _DEEP_INFLIGHT.add(key)
+    background_tasks.add_task(_run_deep_check, key, provider, model)
+    return ok(status="running",
+              note="Глубокая проверка запущена в фоне (~до 120с); "
+                   "статус — GET /admin/models/registry.")
+
+
+_DEEP_INFLIGHT: set = set()
+
+
+async def _run_deep_check(key: str, provider: str, model: str) -> None:
+    """Фоновая задача: прогнать run_deep_check и положить отчёт в реестр."""
+    entry = MODEL_REGISTRY.get(key) or {}
+    try:
+        report = await core_deepcheck.run_deep_check(provider, model)
+    except Exception as e:
+        report = {"status": "failed", "provider": provider, "model": model,
+                  "signals": [], "verdict": "ambiguous", "confidence": 0.0,
+                  "note": f"deep-check упал: {e}"[:200]}
+    entry["deep_check"] = report
+    v = report.get("verdict", "")
+    if v in VERDICT_LABELS:
+        entry["verdict"] = v
+        entry["note"] = f"deep-check: уверенность {report.get('confidence', 0)}."
+    try:
+        persist()
+    except Exception:
+        pass
+    _DEEP_INFLIGHT.discard(key)
 
 
 # ---------- settings ----------
@@ -318,4 +366,5 @@ class SettingsIn(BaseModel):
 @router.post("/settings")
 def update_settings(body: SettingsIn):
     STORE["settings"].update(body.model_dump())
+    persist()
     return ok(settings=STORE["settings"])
