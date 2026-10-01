@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from pathlib import Path
+
 from .dashboard.admin_api import router as admin_router
 from .dashboard.ratelimit import RateLimitMiddleware
 from .dashboard.views import router as views_router
@@ -20,7 +22,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="BossInRelay — админка", lifespan=lifespan)
 app.add_middleware(RateLimitMiddleware)
-app.mount("/static", StaticFiles(directory="app/dashboard/static"), name="static")
+_BASE = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(_BASE / "dashboard" / "static")), name="static")
 app.include_router(admin_router)
 app.include_router(views_router)
 app.include_router(v1_router)

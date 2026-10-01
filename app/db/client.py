@@ -20,11 +20,37 @@ from libsql_client import create_client_sync
 
 from .schema import DDL, INDEXES
 
+# ponytail: поток исполнителя libsql — daemon. Иначе любой короткий процесс
+# (import app.main, self-test, скрипты) висит на выходе: интерпретатор
+# сначала ждёт не-daemon потоки и только потом выполняет atexit, так что
+# close_client через atexit уже не спасает. Явное закрытие (lifespan, CLI)
+# по-прежнему работает как раньше — flush + join.
+try:
+    from libsql_client import sync as _libsql_sync
+
+    def _daemon_executor_init(self) -> None:
+        import asyncio as _aio
+        import collections as _coll
+
+        self._thread = threading.Thread(
+            target=self._run, name="libsql_client", daemon=True)
+        self._loop = _aio.new_event_loop()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._queue = _coll.deque()
+        self._waker = None
+        self._thread.start()
+
+    _libsql_sync._AsyncExecutor.__init__ = _daemon_executor_init  # type: ignore[method-assign]
+except Exception:
+    pass
+
 _BATCH_SIZE = 50
 _FLUSH_AGE_S = 60.0
 
 _lock = threading.Lock()
 _client = None
+_inited = False
 _pending: list[tuple] = []  # строки requests_log, ждут batch-записи
 
 
@@ -34,7 +60,7 @@ def _db_path() -> str:
 
 def get_client():
     global _client
-    if _client is None or _client.closed:
+    if _client is None or getattr(_client, "closed", False):
         url = os.getenv("LIBSQL_URL", "").strip()
         token = os.getenv("LIBSQL_AUTH_TOKEN", "").strip()
         if url and token:
@@ -87,6 +113,7 @@ def init_db() -> bool:
 
 
 def _ensure() -> object:
+    global _inited
     c = get_client()
     try:
         c.execute("SELECT 1")
@@ -94,8 +121,11 @@ def _ensure() -> object:
         global _client
         _client = None
         c = get_client()
-    # таблицы могут отсутствовать (первый старт) — init идемпотентен
-    init_db()
+    # таблицы могут отсутствовать (первый старт) — init идемпотентен,
+    # флаг убирает DDL-прогон на каждый запрос.
+    if not _inited:
+        init_db()
+        _inited = True
     return c
 
 
@@ -203,6 +233,13 @@ def get_embeddings(pool: str, limit: int = 2000) -> list[dict]:
             [pool, now, int(limit)])
     return [{"prompt_hash": r["prompt_hash"], "response": r["response"],
              "embedding": bytes(r["embedding"])} for r in rs.rows]
+
+
+def cache_count() -> int:
+    c = _ensure()
+    with _lock:
+        rs = c.execute("SELECT COUNT(*) AS n FROM cache_entries")
+    return int(rs.rows[0]["n"] or 0)
 
 
 # ---------- users (клиентские ключи sk-relay-...) ----------

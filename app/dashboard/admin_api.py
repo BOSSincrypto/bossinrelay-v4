@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ..core import deepcheck as core_deepcheck
 from ..core import engine as core_engine
 from ..db import client as db_client
+from ..providers import discovery as prov_discovery
 from .auth import require_admin
 from .ssrf import validate_base_url
 from .store import (MODEL_REGISTRY, STORE, VERDICT_LABELS, find_key, find_pool,
@@ -174,6 +175,39 @@ def delete_key(kid: str):
     return ok()
 
 
+class DiscoverIn(BaseModel):
+    raw: str = ""
+
+
+@router.post("/providers/{pid}/discover")
+async def discover_models(pid: str, body: DiscoverIn):
+    """Каталог моделей провайдера по ключу (поток truemodel).
+
+    Ключ используется разово для запроса каталога и НЕ сохраняется.
+    Ответ: {models, source, note}; source live = каталог, fallback = пресет."""
+    p = find_provider(pid)
+    if not p:
+        raise HTTPException(404, "провайдер не найден")
+    return await prov_discovery.list_models(pid, p.get("base_url", ""), body.raw)
+
+
+class CheckModelIn(BaseModel):
+    model: str = ""
+    raw: str = ""
+
+
+@router.post("/providers/{pid}/models/check")
+async def check_model(pid: str, body: CheckModelIn):
+    """Дешёвый live-ping одной модели по ключу (без сохранения)."""
+    p = find_provider(pid)
+    if not p:
+        raise HTTPException(404, "провайдер не найден")
+    if not body.model:
+        raise HTTPException(422, "нужно имя модели")
+    return await prov_discovery.check_model(
+        pid, body.model, p.get("base_url", ""), body.raw)
+
+
 # ---------- pools ----------
 
 @router.get("/pools")
@@ -228,6 +262,10 @@ def delete_pool(pid: str):
 
 @router.get("/cache")
 def cache_info():
+    try:
+        STORE["cache"]["entries"] = db_client.cache_count()
+    except Exception:
+        pass
     return STORE["cache"]
 
 
@@ -248,6 +286,10 @@ def update_cache(body: CacheIn):
 
 @router.post("/cache/clear")
 def clear_cache():
+    try:
+        db_client.cache_clear()
+    except Exception:
+        pass
     STORE["cache"]["entries"] = 0
     STORE["cache"]["hit_rate"] = 0.0
     return ok()

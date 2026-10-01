@@ -5,11 +5,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from pathlib import Path
+
 from .auth import optional_admin
 from .store import MODEL_REGISTRY, STORE, VERDICT_LABELS
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/dashboard/templates")
+_BASE = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(_BASE / "templates"))
 
 NAV = [
     ("overview", "Обзор", "/"),

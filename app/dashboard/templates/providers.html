@@ -79,6 +79,15 @@
     <input type="text" name="note" placeholder="Заметка" style="max-width:180px">
     <button type="submit" class="small">Добавить ключ</button>
   </form>
+  <div style="margin-top:14px">
+    <h3>Обнаружить модели по ключу</h3>
+    <span class="hint">Вставьте ключ — запросим каталог провайдера и покажем доступные модели. Ключ используется разово и не сохраняется.</span>
+    <form onsubmit="return discoverModels(event, '{{ p.id }}')" class="row" style="margin-top:8px">
+      <input type="password" name="raw" placeholder="API-ключ для обнаружения" required style="max-width:280px">
+      <button type="submit" class="small">Обнаружить</button>
+    </form>
+    <div id="disc-{{ p.id }}" style="margin-top:8px"></div>
+  </div>
 </div>
 {% endfor %}
 {% endblock %}
@@ -100,6 +109,58 @@ async function addKey(e, pid) {
 async function deepCheck(key) {
   const [prov, ...rest] = key.split(":");
   await post("/admin/models/" + prov + "/" + rest.join(":") + "/deep-check");
+}
+// keyed by provider id
+const _discRaw = {};
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+async function discoverModels(e, pid) {
+  e.preventDefault();
+  const raw = e.target.raw.value.trim();
+  if (!raw) return false;
+  _discRaw[pid] = raw;
+  const box = document.getElementById("disc-" + pid);
+  box.innerHTML = '<span class="hint">Запрашиваю каталог…</span>';
+  let d;
+  try {
+    d = await api("/admin/providers/" + pid + "/discover",
+      { method: "POST", body: JSON.stringify({ raw }) });
+  } catch (err) { box.innerHTML = ""; toast("Не удалось запросить каталог"); return false; }
+  const src = d.source === "live" ? "каталог провайдера" : "пресет (каталог недоступен)";
+  let html = '<p class="sub">' + d.note + ' Источник: ' + src + '.</p><table>'
+    + '<tr><th>Модель</th><th></th><th></th></tr>';
+  for (const m of d.models) {
+    const safe = escHtml(m);
+    const slug = m.replace(/[^a-zA-Z0-9_-]/g, "_");
+    html += '<tr><td class="mono">' + safe + '</td>'
+      + '<td><button class="ghost small" onclick="checkDiscModel(\'' + pid + '\',\'' + m.replace(/'/g, "") + '\')">Проверить</button></td>'
+      + '<td><span id="cm-' + pid + '-' + slug + '"></span></td></tr>';
+  }
+  box.innerHTML = html + '</table>'
+    + '<div class="row" style="margin-top:8px"><button class="small" onclick="saveDiscModels(\'' + pid + '\')">Сохранить выбранные в провайдер</button></div>';
+  toast("Найдено моделей: " + d.models.length);
+  return false;
+}
+async function checkDiscModel(pid, m) {
+  const slot = document.getElementById("cm-" + pid + "-" + m.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  if (slot) slot.innerHTML = '<span class="hint">пинг…</span>';
+  const r = await api("/admin/providers/" + pid + "/models/check",
+    { method: "POST", body: JSON.stringify({ model: m, raw: _discRaw[pid] || "" }) });
+  if (slot) {
+    slot.innerHTML = r.alive
+      ? '<span class="badge ok">жив · ' + r.latency_ms + ' мс</span>'
+      : '<span class="badge bad">мёртв</span> <span class="hint">' + escHtml(r.error || "") + '</span>';
+  }
+  return false;
+}
+async function saveDiscModels(pid) {
+  const box = document.getElementById("disc-" + pid);
+  const names = [...box.querySelectorAll("td.mono")].map(td => td.textContent.trim()).filter(Boolean);
+  if (!names.length) { toast("Нет моделей для сохранения"); return; }
+  await api("/admin/providers", { method: "POST",
+    body: JSON.stringify({ id: pid, models: names }) });
+  toast("Сохранено"); location.reload();
 }
 </script>
 {% endblock %}

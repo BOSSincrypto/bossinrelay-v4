@@ -274,11 +274,11 @@ async def complete(pool_id: str, messages: list, user_id: str = "",
     if not members:
         raise LookupError(f"в пуле '{pool['id']}' нет участников")
     last_err: Exception | None = None
-    tried: list[str] = []
     max_retries = int(settings.get("max_retries", 3))
 
     for _attempt in range(max(1, max_retries)):
         progressed = False
+        tried: list[str] = []  # заново каждую попытку, иначе повторы мертвы
         for provider_id, model in members:
             keys = live_keys(provider_id)
             if not keys:

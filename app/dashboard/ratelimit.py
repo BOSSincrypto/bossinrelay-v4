@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _buckets: dict[str, list[float]] = {}
 _WINDOW = 60.0
+_MAX_BUCKETS = 5000  # кап: иначе словарь растёт на каждый новый IP бесконечно
 
 
 def _limited(key: str, limit: int) -> int:
@@ -23,6 +24,8 @@ def _limited(key: str, limit: int) -> int:
     if len(hits) < max(1, limit):
         hits.append(now)
         _buckets[key] = hits
+        if len(_buckets) > _MAX_BUCKETS:  # вытесняем самый старый ключ
+            _buckets.pop(next(iter(_buckets)))
         return 0
     _buckets[key] = hits
     return int(_WINDOW - (now - hits[0])) + 1
