@@ -139,7 +139,7 @@ async def chat_completions(body: ChatBody, user: dict = Depends(require_client))
         res = await engine.complete(pool_id, history, user["id"], _extra(body))
     except Exception as e:
         raise _map_error(e)
-    _save_turn(body.session_id, list(body.messages), res)
+    _save_turn(body.session_id, list(body.messages), res, pool_id)
     return res
 
 
@@ -154,13 +154,13 @@ def _history(body: ChatBody) -> tuple[str, list]:
     return body.model, list(body.messages)
 
 
-def _save_turn(sid: str | None, user_msgs: list, res: dict) -> None:
+def _save_turn(sid: str | None, user_msgs: list, res: dict, pool_id: str = "") -> None:
     if not sid:
         return
     try:
         text = res["choices"][0]["message"]["content"]
         u = res.get("usage", {})
-        engine.session_append(sid, res.get("model", ""), list(user_msgs) +
+        engine.session_append(sid, pool_id or res.get("model", ""), list(user_msgs) +
                               [{"role": "assistant", "content": text}],
                               int(u.get("total_tokens", 0)), 0.0)
     except Exception:
@@ -192,5 +192,5 @@ async def _sse(pool_id: str, history: list, user_id: str,
         if sid and full:
             _save_turn(sid, new_msgs,
                        {"choices": [{"message": {"content": "".join(full)}}],
-                        "usage": {}, "model": model})
+                        "usage": {}, "model": model}, pool_id)
     yield "data: [DONE]\n\n"

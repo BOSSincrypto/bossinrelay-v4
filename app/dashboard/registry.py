@@ -14,16 +14,16 @@ from __future__ import annotations
 # дословном повторе эталонного текста deep-check (~200 токенов); допуск 5%.
 FAMILIES: dict[str, dict] = {
     "gpt-4o": {"vendor": "openai", "family": "gpt-4o", "context": 128_000,
-               "output_ceiling": 16_384, "cutoff": "2023-10",
+               "output_ceiling": 16_384, "cutoff": "2023-10", "price": 2.50,
                "cohort_median_tokens": 205},
     "gpt-4o-mini": {"vendor": "openai", "family": "gpt-4o", "context": 128_000,
-                    "output_ceiling": 16_384, "cutoff": "2023-10",
+                    "output_ceiling": 16_384, "cutoff": "2023-10", "price": 0.15,
                     "cohort_median_tokens": 205},
     "claude-sonnet-4-6": {"vendor": "anthropic", "family": "claude-sonnet", "context": 200_000,
-                          "output_ceiling": 8192, "cutoff": "2025-01",
+                          "output_ceiling": 8192, "cutoff": "2025-01", "price": 3.0,
                           "cohort_median_tokens": 212},
     "claude-haiku-4-5": {"vendor": "anthropic", "family": "claude-haiku", "context": 200_000,
-                         "output_ceiling": 8192, "cutoff": "2025-01",
+                         "output_ceiling": 8192, "cutoff": "2025-01", "price": 0.80,
                          "cohort_median_tokens": 212},
 }
 
@@ -49,8 +49,12 @@ def classify_error(text: str) -> str:
     return "server" if t else "unknown"
 
 
+def _bare(model_id: str) -> str:
+    return (model_id or "").split(":")[-1]
+
+
 def verdict(claimed_id: str, served_id: str | None) -> str:
-    claimed, served = (claimed_id or ""), (served_id or "")
+    claimed, served = _bare(claimed_id), _bare(served_id or "")
     if not served:
         return "mismatch"
     if served == claimed:
